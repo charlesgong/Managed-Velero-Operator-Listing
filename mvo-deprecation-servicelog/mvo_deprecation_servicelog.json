@@ -1,0 +1,11 @@
+{
+  "severity": "Warning",
+  "service_name": "SREManualAction",
+  "log_type": "cluster-configuration",
+  "summary": "Deprecation Notice: Managed Velero Operator",
+  "description": "The Managed Velero Operator(MVO), installed by default on the cluster, is deprecated for support and is scheduled to be removed on March 1st, 2027. If you rely on MVO for backup and disaster recovery, you can install the OpenShift API for Data Protection (OADP) operator to maintain these capabilities for your workloads. Please see the linked article for additional migration information, or open a support case for further assistance.",
+  "doc_references": [
+    "https://access.redhat.com/articles/7130144"
+  ],
+  "internal_only": false
+}

@@ -1,0 +1,41 @@
+# Local credentials and authentication material
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+*.pfx
+client_secret*.json
+credentials*.json
+authorized_user*.json
+service_account*.json
+token*.json
+kubeconfig*
+*.kubeconfig
+.ocm.json
+config.local.*
+
+# Generated cluster data and runtime state
+runs/
+state/
+logs/
+outputs/
+cluster_list_*
+mvo-full-list.txt
+non_sts_mvo_clusters.txt
+mvo_sts_classification_*.csv
+*MVO*.csv
+*.xlsx
+mvo-deprecation-servicelog/mvo_clusters.json
+mvo-deprecation-servicelog/mvo_cluster_mapping.csv
+
+# Local one-off artifacts that are not part of this project
+/oadp-hive-review.diff
+/prepare_servicelog.py
+
+# Python and macOS
+.venv/
+__pycache__/
+*.py[cod]
+.DS_Store
