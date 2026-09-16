@@ -15,6 +15,7 @@ kubeconfig*
 *.kubeconfig
 .ocm.json
 config.local.*
+acknowledged_external_ids.txt
 
 # Generated cluster data and runtime state
 runs/
