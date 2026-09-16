@@ -13,6 +13,7 @@ from mvo_schedule.core import (
     generate_full_list,
     parse_cluster_source,
     prepare_service_log_targets,
+    redact_cluster_identifiers,
     update_sheet_verified,
     validate_collection,
     verify_ocm_production,
@@ -132,6 +133,13 @@ class CollectionValidationTests(unittest.TestCase):
         failed["error"] = "backplane timeout"
         with self.assertRaisesRegex(ValidationError, "incomplete"):
             validate_collection([failed], [EXT1])
+
+    def test_error_summary_redacts_cluster_identifiers(self):
+        text = f"external {EXT1}; internal {INT1}"
+        redacted = redact_cluster_identifiers(text)
+        self.assertNotIn(EXT1, redacted)
+        self.assertNotIn(INT1, redacted)
+        self.assertIn("11111111…", redacted)
 
 
 class SheetTests(unittest.TestCase):

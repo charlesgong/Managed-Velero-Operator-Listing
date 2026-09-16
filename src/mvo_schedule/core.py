@@ -34,6 +34,11 @@ EXTERNAL_ID_RE = re.compile(
     r"[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
 )
 INTERNAL_ID_RE = re.compile(r"^[0-9a-z]{32}$")
+EXTERNAL_ID_IN_TEXT_RE = re.compile(
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+)
+INTERNAL_ID_IN_TEXT_RE = re.compile(r"(?<![0-9a-z])[0-9a-z]{32}(?![0-9a-z])")
 
 
 class MVOError(RuntimeError):
@@ -42,6 +47,11 @@ class MVOError(RuntimeError):
 
 class ValidationError(MVOError):
     pass
+
+
+def redact_cluster_identifiers(text: str) -> str:
+    text = EXTERNAL_ID_IN_TEXT_RE.sub(lambda match: match.group(0)[:8] + "…", text)
+    return INTERNAL_ID_IN_TEXT_RE.sub(lambda match: match.group(0)[:8] + "…", text)
 
 
 @dataclass(frozen=True)
@@ -380,7 +390,9 @@ def validate_collection(rows: Sequence[Mapping[str, Any]], expected_ids: Sequenc
     errors = [row for row in rows if row.get("status") != "ok"]
     if errors:
         examples = "; ".join(
-            f"{row.get('external_id')}: {row.get('error', 'unknown error')}" for row in errors[:5]
+            f"{str(row.get('external_id'))[:8]}…: "
+            f"{redact_cluster_identifiers(str(row.get('error', 'unknown error')))}"
+            for row in errors[:5]
         )
         raise ValidationError(
             f"Cluster collection was incomplete ({len(errors)} of {len(rows)} failed): {examples}"
