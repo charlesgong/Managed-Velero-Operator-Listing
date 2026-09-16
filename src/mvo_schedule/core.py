@@ -24,8 +24,8 @@ SHEET_HEADERS = [
     "Version",
     "Owner/Org",
     "Region",
-    "MVO",
-    "OADP",
+    "MVO ",
+    "OADP ",
     "Backups",
     "Schedules",
 ]
@@ -384,10 +384,56 @@ def collect_clusters(
     return [results[external_id] for external_id in external_ids]
 
 
+def merge_collection_with_sheet(
+    rows: Sequence[Mapping[str, Any]], current_values: Sequence[Sequence[Any]]
+) -> list[dict[str, Any]]:
+    """Preserve the last verified worksheet fields for transient probe failures.
+
+    OCM metadata (including internal ID and STS status) must still have succeeded.
+    This lets hibernating or temporarily inaccessible clusters retain their last
+    known values without turning an access failure into false zero/No results.
+    """
+    validate_sheet_matrix(current_values)
+    previous = {
+        str(values[0]): list(values)
+        for values in current_values[1:]
+        if values and len(values) == len(SHEET_HEADERS)
+    }
+    merged: list[dict[str, Any]] = []
+    for source_row in rows:
+        row = dict(source_row)
+        if row.get("status") == "ok":
+            merged.append(row)
+            continue
+        external_id = str(row.get("external_id", ""))
+        old = previous.get(external_id)
+        if (
+            old is None
+            or not INTERNAL_ID_RE.fullmatch(str(row.get("internal_id", "")))
+            or "sts_enabled" not in row
+        ):
+            merged.append(row)
+            continue
+        row.update(
+            name=old[1],
+            version=old[2],
+            org=old[3],
+            region=old[4],
+            mvo=old[5],
+            oadp=old[6],
+            backups=old[7],
+            schedules=old[8],
+            status="stale",
+            fallback="sheet_snapshot",
+        )
+        merged.append(row)
+    return merged
+
+
 def validate_collection(rows: Sequence[Mapping[str, Any]], expected_ids: Sequence[str]) -> None:
     if [row.get("external_id") for row in rows] != list(expected_ids):
         raise ValidationError("Collected cluster order/identity does not match the full list")
-    errors = [row for row in rows if row.get("status") != "ok"]
+    errors = [row for row in rows if row.get("status") not in {"ok", "stale"}]
     if errors:
         examples = "; ".join(
             f"{str(row.get('external_id'))[:8]}…: "
@@ -449,6 +495,65 @@ def write_classification_csv(path: Path, rows: Sequence[Mapping[str, Any]]) -> N
     temp.replace(path)
 
 
+def load_collection_artifacts(run_dir: Path) -> tuple[list[dict[str, Any]], Path]:
+    cluster_files = sorted(run_dir.glob("mvo_cluster_list_*.csv"))
+    if len(cluster_files) != 1:
+        raise ValidationError(
+            f"Expected exactly one dated MVO cluster list in {run_dir}, found {len(cluster_files)}"
+        )
+    cluster_path = cluster_files[0]
+    classification_path = run_dir / "mvo_sts_classification.csv"
+    try:
+        with cluster_path.open(encoding="utf-8", newline="") as handle:
+            matrix = list(csv.reader(handle))
+        with classification_path.open(encoding="utf-8", newline="") as handle:
+            classifications = {
+                row["external_id"]: row for row in csv.DictReader(handle)
+            }
+    except OSError as exc:
+        raise MVOError(f"Cannot load run artifacts from {run_dir}: {exc}") from exc
+    validate_sheet_matrix(matrix)
+    rows: list[dict[str, Any]] = []
+    for values in matrix[1:]:
+        external_id = values[0]
+        classification = classifications.get(external_id)
+        if classification is None:
+            raise ValidationError(f"Missing classification for {external_id[:8]}…")
+        status = classification.get("status", "")
+        backups: Any = values[7]
+        schedules: Any = values[8]
+        if status == "ok":
+            try:
+                backups = int(backups)
+                schedules = int(schedules)
+            except ValueError as exc:
+                raise ValidationError(
+                    f"Fresh row {external_id[:8]}… has non-numeric backup/schedule counts"
+                ) from exc
+        rows.append(
+            {
+                "external_id": external_id,
+                "internal_id": classification.get("internal_id", ""),
+                "name": values[1],
+                "version": values[2],
+                "org": values[3],
+                "region": values[4],
+                "product": classification.get("product", ""),
+                "sts_enabled": classification.get("sts_enabled", "").lower() == "true",
+                "mvo": values[5],
+                "oadp": values[6],
+                "backups": backups,
+                "schedules": schedules,
+                "status": status,
+                "error": classification.get("error", ""),
+            }
+        )
+    if len(classifications) != len(rows):
+        raise ValidationError("Classification and dated cluster-list row counts do not match")
+    validate_collection(rows, [row["external_id"] for row in rows])
+    return rows, cluster_path
+
+
 def _column_count(values: Sequence[Sequence[Any]]) -> int:
     return max((len(row) for row in values), default=0)
 
@@ -469,11 +574,13 @@ class GoogleSheetsClient:
         sheet_range: str,
         runner: CommandRunner = run_command,
         timeout: int = 60,
+        quota_project: str | None = None,
     ) -> None:
         self.sheet_id = sheet_id
         self.sheet_range = sheet_range
         self.runner = runner
         self.timeout = timeout
+        self.quota_project = quota_project or os.environ.get("GOOGLE_QUOTA_PROJECT", "").strip()
 
     def _token(self) -> str:
         token = os.environ.get("GOOGLE_OAUTH_ACCESS_TOKEN", "").strip()
@@ -489,14 +596,17 @@ class GoogleSheetsClient:
 
     def _request(self, method: str, url: str, payload: Any | None = None) -> Any:
         data = None if payload is None else json.dumps(payload).encode("utf-8")
+        headers = {
+            "Authorization": f"Bearer {self._token()}",
+            "Content-Type": "application/json",
+        }
+        if self.quota_project:
+            headers["X-Goog-User-Project"] = self.quota_project
         request = urllib.request.Request(
             url,
             data=data,
             method=method,
-            headers={
-                "Authorization": f"Bearer {self._token()}",
-                "Content-Type": "application/json",
-            },
+            headers=headers,
         )
         try:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:
@@ -513,7 +623,7 @@ class GoogleSheetsClient:
         return f"https://sheets.googleapis.com/v4/spreadsheets/{self.sheet_id}/values/{encoded}"
 
     def read(self) -> list[list[Any]]:
-        payload = self._request("GET", self._values_url())
+        payload = self._request("GET", self._values_url() + "?valueRenderOption=UNFORMATTED_VALUE")
         return payload.get("values", [])
 
     def write(self, values: Sequence[Sequence[Any]]) -> None:
@@ -537,8 +647,9 @@ def update_sheet_verified(
     snapshot_path: Path,
     *,
     write: bool,
+    current: list[list[Any]] | None = None,
 ) -> str:
-    current = client.read()
+    current = client.read() if current is None else current
     validate_sheet_matrix(current)
     atomic_write_json(snapshot_path, {"values": current})
     if not write:
@@ -550,6 +661,10 @@ def update_sheet_verified(
             client.clear(len(expected) + 1, old_rows)
         readback = client.read()
         if readback != expected:
+            atomic_write_json(
+                snapshot_path.with_name("sheet_readback_mismatch.json"),
+                {"expected": expected, "actual": readback},
+            )
             raise ValidationError("Google Sheet read-back does not match the intended values")
     except Exception:
         try:
@@ -587,24 +702,30 @@ def prepare_service_log_targets(
     unresolved = sorted(external_id for external_id in pending if external_id not in mapping)
     if unresolved:
         raise ValidationError(f"Pending service-log IDs have no OCM mapping: {', '.join(unresolved[:5])}")
-    external_ids = sorted(pending)
-    internal_ids = [mapping[external_id] for external_id in external_ids]
-    if any(not INTERNAL_ID_RE.fullmatch(value) for value in internal_ids):
+    pending_external_ids = sorted(pending)
+    pending_internal_ids = [mapping[external_id] for external_id in pending_external_ids]
+    all_external_ids = sorted(mapping)
+    all_internal_ids = [mapping[external_id] for external_id in all_external_ids]
+    if any(not INTERNAL_ID_RE.fullmatch(value) for value in all_internal_ids):
         raise ValidationError("Generated service-log list contains invalid internal cluster IDs")
     output_dir.mkdir(parents=True, exist_ok=True)
     external_path = output_dir / f"cluster_list_{run_date}.json"
     internal_path = output_dir / f"mvo_clusters_{run_date}.json"
+    pending_external_path = output_dir / f"pending_cluster_list_{run_date}.json"
+    pending_internal_path = output_dir / f"pending_mvo_clusters_{run_date}.json"
     mapping_path = output_dir / f"mvo_cluster_mapping_{run_date}.csv"
-    atomic_write_json(external_path, {"clusters": external_ids})
-    atomic_write_json(internal_path, {"clusters": internal_ids})
+    atomic_write_json(external_path, {"clusters": all_external_ids})
+    atomic_write_json(internal_path, {"clusters": all_internal_ids})
+    atomic_write_json(pending_external_path, {"clusters": pending_external_ids})
+    atomic_write_json(pending_internal_path, {"clusters": pending_internal_ids})
     with mapping_path.with_suffix(".csv.tmp").open("w", encoding="utf-8", newline="") as handle:
         writer = csv.writer(handle)
         writer.writerow(["external_id", "internal_id"])
-        writer.writerows(zip(external_ids, internal_ids))
+        writer.writerows(zip(all_external_ids, all_internal_ids))
     mapping_path.with_suffix(".csv.tmp").replace(mapping_path)
     next_state = {
         "seen_external_ids": sorted(eligible),
-        "pending_external_ids": external_ids,
+        "pending_external_ids": pending_external_ids,
         "updated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
     }
     if commit_state:
@@ -612,9 +733,12 @@ def prepare_service_log_targets(
     return {
         "bootstrapped": bootstrapped,
         "new_count": len(new_ids),
-        "pending_count": len(external_ids),
+        "full_count": len(all_external_ids),
+        "pending_count": len(pending_external_ids),
         "external_path": str(external_path),
         "internal_path": str(internal_path),
+        "pending_external_path": str(pending_external_path),
+        "pending_internal_path": str(pending_internal_path),
         "mapping_path": str(mapping_path),
     }
 

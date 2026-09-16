@@ -13,6 +13,7 @@ from .core import (
     acknowledge_pending,
     collect_clusters,
     generate_full_list,
+    merge_collection_with_sheet,
     prepare_service_log_targets,
     sheet_values,
     update_sheet_verified,
@@ -75,25 +76,33 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         workers=int(config.get("workers", 8)),
         timeout=int(config.get("command_timeout_seconds", 60)),
     )
-    write_classification_csv(run_dir / "mvo_sts_classification.csv", rows)
-    write_collection_csv(run_dir / "mvo_cluster_list.csv", rows)
-    validate_collection(rows, external_ids)
-
     if args.skip_sheet:
         if args.write_sheet:
             raise MVOError("--skip-sheet and --write-sheet cannot be used together")
+        current_sheet = None
         sheet_status = "skipped"
     else:
         client = GoogleSheetsClient(
             str(config.get("sheet_id", DEFAULT_SHEET_ID)),
             str(config.get("sheet_range", DEFAULT_SHEET_RANGE)),
             timeout=int(config.get("command_timeout_seconds", 60)),
+            quota_project=str(config.get("google_quota_project", "")),
         )
+        current_sheet = client.read()
+        rows = merge_collection_with_sheet(rows, current_sheet)
+
+    write_classification_csv(run_dir / "mvo_sts_classification.csv", rows)
+    cluster_list_path = run_dir / f"mvo_cluster_list_{stamp.strftime('%Y%m%d')}.csv"
+    write_collection_csv(cluster_list_path, rows)
+    validate_collection(rows, external_ids)
+
+    if not args.skip_sheet:
         sheet_status = update_sheet_verified(
             client,
             sheet_values(rows),
             run_dir / "sheet_snapshot.json",
             write=args.write_sheet,
+            current=current_sheet,
         )
 
     # State moves only after an explicitly requested, verified Sheet write. A
@@ -111,9 +120,11 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "ocm_identity_verified": bool(identity),
         "cluster_count": len(rows),
         "non_sts_count": sum(1 for row in rows if not row["sts_enabled"]),
+        "stale_row_count": sum(1 for row in rows if row.get("status") == "stale"),
         "sheet": sheet_status,
         "state_committed": commit_state,
         "run_dir": str(run_dir),
+        "mvo_cluster_list": str(cluster_list_path),
         "service_log": targets,
     }
     (run_dir / "result.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")

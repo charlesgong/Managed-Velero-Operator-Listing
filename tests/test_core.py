@@ -11,6 +11,8 @@ from mvo_schedule.core import (
     SHEET_HEADERS,
     ValidationError,
     generate_full_list,
+    load_collection_artifacts,
+    merge_collection_with_sheet,
     parse_cluster_source,
     prepare_service_log_targets,
     redact_cluster_identifiers,
@@ -141,6 +143,48 @@ class CollectionValidationTests(unittest.TestCase):
         self.assertNotIn(INT1, redacted)
         self.assertIn("11111111…", redacted)
 
+    def test_probe_failure_can_reuse_last_verified_sheet_values(self):
+        failed = row()
+        failed.update(status="error", error="cluster is hibernating", mvo="Unknown", oadp="Unknown")
+        current = [
+            SHEET_HEADERS,
+            [EXT1, "old-name", "4.19", "old-org", "us-east-1", "Yes", "No", 4, 2],
+        ]
+        merged = merge_collection_with_sheet([failed], current)
+        self.assertEqual(merged[0]["status"], "stale")
+        self.assertEqual(merged[0]["name"], "old-name")
+        self.assertEqual(merged[0]["backups"], 4)
+        validate_collection(merged, [EXT1])
+
+    def test_metadata_failure_cannot_use_sheet_fallback(self):
+        failed = {"external_id": EXT1, "status": "error", "error": "OCM lookup failed"}
+        current = [
+            SHEET_HEADERS,
+            [EXT1, "old-name", "4.19", "old-org", "us-east-1", "Yes", "No", 4, 2],
+        ]
+        merged = merge_collection_with_sheet([failed], current)
+        with self.assertRaisesRegex(ValidationError, "incomplete"):
+            validate_collection(merged, [EXT1])
+
+    def test_loads_typed_dated_run_artifacts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cluster_path = root / "mvo_cluster_list_20260916.csv"
+            cluster_path.write_text(
+                ",".join(SHEET_HEADERS) + "\n"
+                + f"{EXT1},cluster,4.20,example,us-east-1,Yes,No,4,2\n",
+                encoding="utf-8",
+            )
+            (root / "mvo_sts_classification.csv").write_text(
+                "external_id,internal_id,name,product,sts_enabled,status,error\n"
+                + f"{EXT1},{INT1},cluster,rosa,False,ok,\n",
+                encoding="utf-8",
+            )
+            rows, loaded_path = load_collection_artifacts(root)
+            self.assertEqual(loaded_path, cluster_path)
+            self.assertEqual(rows[0]["backups"], 4)
+            self.assertIsInstance(rows[0]["backups"], int)
+
 
 class SheetTests(unittest.TestCase):
     def test_dry_run_does_not_write(self):
@@ -192,8 +236,10 @@ class ServiceLogTests(unittest.TestCase):
             result = prepare_service_log_targets(rows, state, root / "second", "20260916", commit_state=True)
             self.assertEqual(result["new_count"], 1)
             self.assertEqual(result["pending_count"], 1)
-            internal = json.loads(Path(result["internal_path"]).read_text(encoding="utf-8"))
+            internal = json.loads(Path(result["pending_internal_path"]).read_text(encoding="utf-8"))
             self.assertEqual(internal, {"clusters": [INT2]})
+            full_internal = json.loads(Path(result["internal_path"]).read_text(encoding="utf-8"))
+            self.assertEqual(full_internal, {"clusters": [INT1, INT2]})
             repeated = prepare_service_log_targets(
                 rows, state, root / "third", "20260917", commit_state=True
             )

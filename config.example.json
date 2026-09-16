@@ -4,6 +4,7 @@
   ],
   "sheet_id": "1OWOKfiegWe9IxE1PQyZZ3s8ZQ3hW6Veq6k5JyWW4Rh0",
   "sheet_range": "MVO!A:I",
+  "google_quota_project": "replace-with-your-adc-quota-project",
   "workers": 8,
   "command_timeout_seconds": 60
 }

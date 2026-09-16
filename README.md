@@ -16,14 +16,16 @@ The Codex desktop automation runs this repository on the local machine. The mach
 
 1. Verify `ocm config get url` is exactly `https://api.openshift.com` and `ocm whoami` succeeds.
 2. Run `scripts/generate_mvo_cluster_list.py` to produce a fresh, validated `mvo-full-list.txt` from the configured telemetry export.
-3. Query OCM with JSON responses, classify STS/non-STS clusters, and collect the nine approved MVO worksheet fields. Any lookup, backplane, or `oc` error blocks later writes.
+3. Query OCM with JSON responses, classify STS/non-STS clusters, and collect the nine approved MVO worksheet fields. An OCM metadata failure blocks later writes. For a hibernating or temporarily inaccessible cluster whose OCM metadata is valid, preserve the last verified worksheet fields and report the row as stale instead of writing false `No` or zero values.
 4. Snapshot the current `MVO!A:I` range, update only that range, read it back, and roll it back if verification fails.
 5. Bootstrap the first successful run without sending notices. On later runs, retain newly discovered non-STS clusters in a pending set until a human acknowledges that the service logs were posted.
-6. Generate a dated external-ID audit list plus the internal-ID JSON accepted by `osdctl servicelog post --clusters-file`. The scheduled workflow never posts it.
+6. Write `mvo_cluster_list_YYYYMMDD.csv`, full dated external/internal JSON inventories, and separate `pending_*` JSON files for newly discovered notification targets. The internal-ID JSON format is accepted by `osdctl servicelog post --clusters-file`; the scheduled workflow never posts it.
 
 ## Configuration
 
 Copy `config.example.json` to `config.local.json` and replace `full_list_command` with the approved command that emits either one external UUID per line, a JSON `{"clusters": [...]}` object, or a Prometheus JSON response with `_id` labels. The command is executed directly without a shell.
+
+Set `google_quota_project` to the quota project configured for application-default credentials. This value is not a credential.
 
 No telemetry export command was present in the original scripts, so it is an explicit required configuration instead of an invented production dependency.
 
@@ -33,6 +35,8 @@ Google authentication uses, in order:
 2. `gcloud auth application-default print-access-token`.
 
 Neither token is printed or written to the repository.
+
+The workflow does not download or depend on `MVO _ OADP Cluster List - MVO.csv`. It reads and updates the existing `MVO!A:I` range through the Google Sheets API, keeps a local JSON snapshot for rollback, and writes its own dated CSV as a run artifact.
 
 ## Commands
 
@@ -61,6 +65,12 @@ PYTHONPATH=src python3 scripts/run_mvo_schedule.py --ack-file acknowledged_exter
 ```
 
 Run artifacts are written under `runs/`; state is written under `state/`. Both are ignored by Git.
+
+If collection completed but a Sheet write/read-back failed and rolled back, resume only the verified finalization phase without recollecting every cluster:
+
+```sh
+PYTHONPATH=src python3 scripts/finalize_mvo_run.py runs/YYYYMMDD_HHMMSS --quota-project YOUR_PROJECT
+```
 
 ## Codex schedule
 
