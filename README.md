@@ -74,9 +74,10 @@ PYTHONPATH=src python3 scripts/finalize_mvo_run.py runs/YYYYMMDD_HHMMSS --quota-
 
 ## Codex schedule
 
-The Codex automation is scheduled for Mondays at 11:00 local time. It is safe to remain active while configuration is incomplete because the runner exits before external writes. A successful scheduled write requires all of these checks to pass:
+The Codex automation is scheduled for Tuesdays at 11:00 local time. It is safe to remain active while configuration is incomplete because the runner exits before external writes. A successful scheduled write requires all of these checks to pass:
 
 - OCM is logged in to production.
+- The Mac is awake, Codex is running, and the Red Hat corporate network/VPN can resolve the backplane proxy.
 - `config.local.json` contains the approved telemetry export command.
 - Google application-default authentication can read and update the target Sheet.
 - a complete read-only production run succeeds.
