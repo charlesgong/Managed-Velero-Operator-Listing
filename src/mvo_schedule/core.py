@@ -18,6 +18,16 @@ from typing import Any, Callable, Iterable, Mapping, Optional, Sequence
 
 
 PRODUCTION_OCM_URL = "https://api.openshift.com"
+OBSERVATORIUM_QUERY_URL = (
+    "https://observatorium-mst.api.openshift.com/"
+    "api/metrics/v1/osd/api/v1/query"
+)
+MVO_CLUSTER_QUERY = (
+    "max by (_id) ("
+    "sre:telemetry:package_operator_object_set_succeeded_timestamp_seconds"
+    '{pko_package_instance="managed-velero-operator"}'
+    ")"
+)
 SHEET_HEADERS = [
     "Cluster ID",
     "Cluster Name",
@@ -144,6 +154,41 @@ def parse_cluster_source(text: str) -> list[str]:
         except json.JSONDecodeError as exc:
             raise ValidationError(f"MVO cluster source returned invalid JSON: {exc}") from exc
     return validate_external_ids(stripped.splitlines())
+
+
+def fetch_mvo_observatorium_ids(
+    *,
+    runner: CommandRunner = run_command,
+    opener: Callable[..., Any] = urllib.request.urlopen,
+    timeout: int = 60,
+) -> list[str]:
+    """Query the production legacy Observatorium tenant without persisting credentials."""
+    token = require_success(
+        runner(["ocm", "token"], None, timeout),
+        "OCM access-token generation",
+    )
+    if not token:
+        raise MVOError("OCM access-token generation returned an empty token")
+    url = f"{OBSERVATORIUM_QUERY_URL}?{urllib.parse.urlencode({'query': MVO_CLUSTER_QUERY})}"
+    request = urllib.request.Request(
+        url,
+        headers={"Accept": "application/json", "Authorization": f"Bearer {token}"},
+    )
+    try:
+        with opener(request, timeout=timeout) as response:
+            raw = response.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        raise MVOError(f"Observatorium query returned HTTP {exc.code}") from exc
+    except urllib.error.URLError as exc:
+        raise MVOError(f"Observatorium query failed: {exc.reason}") from exc
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise MVOError(f"Observatorium query returned invalid JSON: {exc}") from exc
+    if not isinstance(payload, dict) or payload.get("status") != "success":
+        detail = str(payload.get("error", "unknown response")) if isinstance(payload, dict) else "unknown response"
+        raise MVOError(f"Observatorium query failed: {detail[:300]}")
+    return sorted(validate_external_ids(_ids_from_json(payload)))
 
 
 def generate_full_list(

@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 from mvo_schedule.core import (
     CommandResult,
@@ -11,6 +12,7 @@ from mvo_schedule.core import (
     SHEET_HEADERS,
     ValidationError,
     generate_full_list,
+    fetch_mvo_observatorium_ids,
     load_collection_artifacts,
     merge_collection_with_sheet,
     parse_cluster_source,
@@ -126,6 +128,54 @@ class SourceTests(unittest.TestCase):
             source.write_text(f"{EXT1}\n{EXT2}\n", encoding="utf-8")
             self.assertEqual(generate_full_list(output, source_file=source), [EXT1, EXT2])
             self.assertEqual(output.read_text(encoding="utf-8"), f"{EXT1}\n{EXT2}\n")
+
+    def test_observatorium_source_uses_ephemeral_ocm_token(self):
+        payload = {
+            "status": "success",
+            "data": {"result": [{"metric": {"_id": EXT2}}, {"metric": {"_id": EXT1}}]},
+        }
+        captured = {}
+
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, traceback):
+                return False
+
+            def read(self):
+                return json.dumps(payload).encode("utf-8")
+
+        def runner(argv, env, timeout):
+            self.assertEqual(argv, ["ocm", "token"])
+            return CommandResult("secret-token", "", 0)
+
+        def opener(request, timeout):
+            captured["authorization"] = request.get_header("Authorization")
+            captured["query"] = parse_qs(urlparse(request.full_url).query)["query"][0]
+            return Response()
+
+        self.assertEqual(
+            fetch_mvo_observatorium_ids(runner=runner, opener=opener),
+            [EXT1, EXT2],
+        )
+        self.assertEqual(captured["authorization"], "Bearer secret-token")
+        self.assertIn("managed-velero-operator", captured["query"])
+
+    def test_observatorium_source_rejects_empty_result(self):
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, traceback):
+                return False
+
+            def read(self):
+                return b'{"status":"success","data":{"result":[]}}'
+
+        runner = lambda argv, env, timeout: CommandResult("secret-token", "", 0)
+        with self.assertRaisesRegex(ValidationError, "does not contain"):
+            fetch_mvo_observatorium_ids(runner=runner, opener=lambda request, timeout: Response())
 
 
 class CollectionValidationTests(unittest.TestCase):

@@ -23,11 +23,11 @@ The Codex desktop automation runs this repository on the local machine. The mach
 
 ## Configuration
 
-Copy `config.example.json` to `config.local.json` and replace `full_list_command` with the approved command that emits either one external UUID per line, a JSON `{"clusters": [...]}` object, or a Prometheus JSON response with `_id` labels. The command is executed directly without a shell.
+Copy `config.example.json` to `config.local.json`. The default `full_list_command` queries the production legacy Observatorium tenant using an ephemeral token from `ocm token`; the token is never printed or stored. A replacement command must emit either one external UUID per line, a JSON `{"clusters": [...]}` object, or a Prometheus JSON response with `_id` labels. The command is executed directly without a shell.
 
 Set `google_quota_project` to the quota project configured for application-default credentials. This value is not a credential.
 
-No telemetry export command was present in the original scripts, so it is an explicit required configuration instead of an invented production dependency.
+The Observatorium source is tenant-wide and does not depend on RHOBS-next cell metadata, which is absent from some legacy MVO clusters.
 
 Google authentication uses, in order:
 
